@@ -1,2 +1,17 @@
+# Reference PDFs kept locally, not committed
 /MATH3060__Multi_Horizon_River_Flow_Forecasting (1).pdf
-/q1_analysis.ipynb
+
+# R Markdown build artifacts
+/paper_cache/
+/paper_files/
+*.log
+*.aux
+*.out
+*.toc
+*.synctex.gz
+
+# R
+.Rhistory
+.Rapp.history
+.Renviron
+.Rproj.user/

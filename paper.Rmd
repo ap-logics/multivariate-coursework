@@ -1,0 +1,1032 @@
+---
+title: "MATH3030 Coursework"
+subtitle: "Multivariate Statistics --- Spring 2026"
+author: "Aayush Parekh (20527121)"
+date: ""
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: pdflatex
+    fig_caption: yes
+fontsize: 11pt
+geometry: margin=2.5cm
+header-includes:
+  - \usepackage{float}
+  - \usepackage{booktabs}
+  - \usepackage{microtype}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = FALSE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.align  = "center",
+  dpi        = 200,
+  cache      = TRUE,
+  fig.pos    = "H",
+  out.width  = "100%"
+)
+user_lib <- file.path(path.expand("~"), "R", "library")
+.libPaths(c(user_lib, .libPaths()))
+suppressPackageStartupMessages({
+  library(ggplot2); library(ggrepel); library(MASS)
+  library(mclust); library(patchwork); library(scales); library(knitr)
+})
+set.seed(42)
+
+palette_continents <- c(
+  "Africa"="#66c2a5","Americas"="#fc8d62","Asia"="#8da0cb",
+  "Europe"="#e78ac3","Oceania"="#a6d854"
+)
+theme_paper <- theme_minimal(base_size = 9) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 10))
+
+UN <- read.csv("UN.csv")
+years       <- seq(1952, 2007, 5)
+year_labels <- as.character(years)
+continent   <- UN[, 1]
+country     <- UN[, 2]
+gdp     <- UN[,  3:14]; colnames(gdp)     <- year_labels; rownames(gdp)     <- country
+lifeExp <- UN[, 15:26]; colnames(lifeExp) <- year_labels; rownames(lifeExp) <- country
+popn    <- UN[, 27:38]; colnames(popn)    <- year_labels; rownames(popn)    <- country
+```
+
+\newpage
+
+# Question 1
+
+## Exploratory Data Analysis
+
+The UN dataset contains GDP per capita, life expectancy, and population
+for 141 countries at 12 evenly spaced time points from 1952 to 2007.
+No values are missing. Sample sizes per continent are uneven (52
+African, 32 Asian, 30 European, 25 American, and 2 Oceanian), so any
+continent-level summary for Oceania is effectively a two-country
+average of Australia and New Zealand. We summarise the 70-year
+dynamics with continent-mean trajectories for each variable and a
+table of 1952 and 2007 medians.
+
+```{r eda-trends, fig.cap="Continent-mean trajectories, 1952–2007. GDP and population are on log scales; life expectancy is linear.", fig.width=10, fig.height=3.2}
+eda_long <- function(data, varname) {
+  mat <- as.matrix(data)
+  do.call(rbind, lapply(sort(unique(continent)), function(cont) {
+    m_year <- colMeans(mat[continent == cont, , drop = FALSE])
+    data.frame(year = years, continent = cont, value = as.numeric(m_year),
+               variable = varname, stringsAsFactors = FALSE)
+  }))
+}
+eda_trends <- rbind(
+  eda_long(gdp,     "GDP per capita (USD)"),
+  eda_long(lifeExp, "Life expectancy (years)"),
+  eda_long(popn,    "Population")
+)
+panels <- lapply(c("GDP per capita (USD)","Life expectancy (years)","Population"),
+  function(v) {
+    d <- subset(eda_trends, variable == v)
+    p <- ggplot(d, aes(year, value, colour = continent)) +
+      geom_line(linewidth = 0.9) + geom_point(size = 1.3) +
+      scale_colour_manual(values = palette_continents) +
+      labs(x = "Year", y = NULL, title = v) + theme_paper
+    if (v != "Life expectancy (years)") p <- p + scale_y_log10(labels = label_comma())
+    else p <- p + scale_y_continuous(labels = label_comma())
+    p
+  })
+wrap_plots(panels, ncol = 3, guides = "collect") &
+  theme(legend.position = "right") &
+  labs(colour = "Continent")
+```
+
+Asia shows the steepest gains on both axes. Mean life expectancy rose
+from 44 to 72 years and median GDP per capita almost quadrupled,
+driven by a handful of export-led economies. Singapore's GDP per
+capita rose from \$2,315 to \$47,143 (20×), South Korea's by 23×,
+and Taiwan's by 24×. China dominates the population panel, rising
+from 556 million in 1952 to 1.32 billion in 2007. These multipliers
+are well above the Asian median GDP gain of 3.8×, so the continent
+mean hides a wide spread rather than uniform growth.
+
+Africa's trajectory is much shallower. Median GDP rose only 1.5× over
+55 years, and mean life expectancy, after rising from 39 to 53 years,
+plateaued from the 1990s onward. The plateau coincides with a broad
+health and conflict downturn in southern and central Africa. Zimbabwe's life expectancy fell from 48.5 to 43.5 years
+(the largest decline in the dataset), Swaziland, Zambia, and Lesotho
+show similar stagnation, and the Democratic Republic of the Congo is
+the only country whose GDP per capita ended below its 1952 level, at
+36% of its original value. Africa's population grew faster than any
+other continent's, which compounds the GDP-growth shortfall on a
+per-capita basis.
+
+Europe and Oceania remain firmly at the top throughout. Europe's GDP
+growth (\$5,143 to \$28,054, 5.5×) is comparable to Asia's in
+multiplier terms, but its life-expectancy gain of +13 years is about
+half of Asia's +28. This is structural rather than a lack of
+development. A population already close to its demographic ceiling
+has less room to gain years than one that is catching up. Both
+continents also evolve more smoothly than Asia or Africa, with no
+sharp deviations between adjacent five-year intervals.
+
+```{r eda-bubble, fig.cap="GDP per capita vs life expectancy in 2007. Bubble size is proportional to population.", fig.width=7, fig.height=4.8}
+bubble_df <- data.frame(country = country, continent = continent,
+                        gdp = gdp[,"2007"], lifeExp = lifeExp[,"2007"],
+                        popn = popn[,"2007"])
+largest <- do.call(rbind, by(bubble_df, bubble_df$continent,
+  function(d) d[which.max(d$popn), ]))
+ggplot(bubble_df, aes(gdp, lifeExp, size = popn, colour = continent)) +
+  geom_point(alpha = 0.6) +
+  geom_text_repel(data = largest, aes(label = country),
+                  size = 3, fontface = "bold", show.legend = FALSE) +
+  scale_x_log10(labels = label_comma()) +
+  scale_size_area(max_size = 15, guide = "none") +
+  scale_colour_manual(values = palette_continents) +
+  labs(x = "GDP per capita (log scale, 2007)",
+       y = "Life expectancy (years, 2007)", colour = "Continent") +
+  theme_paper
+```
+
+The 2007 snapshot compresses the trajectories into a single
+cross-section and makes the joint structure visible. GDP and life
+expectancy are strongly but non-linearly related. The Pearson
+correlation on log(GDP) is 0.81, appreciably higher than on raw GDP
+(0.68), reflecting the diminishing marginal returns on life expectancy
+at high income. Continents separate cleanly, with Africa in the
+lower-left, Europe in the upper-right, and the Americas grouped in the
+middle. Asia is the outlier continent, spanning almost
+the full income range from India and Bangladesh at the low end to
+Japan and Singapore at the top, with China positioned between the two
+modes.
+
+```{r eda-kde, fig.cap="Kernel density estimates of each variable in 2007.", fig.width=11, fig.height=3.2}
+kde_specs <- list(
+  list(name="log10(GDP per capita, 2007)", x=log10(gdp[,"2007"])),
+  list(name="Life expectancy (2007)",      x=lifeExp[,"2007"]),
+  list(name="log10(Population, 2007)",     x=log10(popn[,"2007"])))
+kde_panels <- lapply(kde_specs, function(s) {
+  d <- data.frame(x = s$x, continent = continent)
+  ggplot(d, aes(x, fill = continent, colour = continent)) +
+    geom_density(alpha = 0.2, linewidth = 0.7) +
+    scale_fill_manual(values = palette_continents, guide = "none") +
+    scale_colour_manual(values = palette_continents) +
+    labs(x = NULL, y = "Density", title = s$name, colour = "Continent") +
+    theme_paper + theme(axis.text.y = element_blank(),
+                        axis.ticks.y = element_blank())
+})
+wrap_plots(kde_panels, ncol = 3, guides = "collect") &
+  theme(legend.position = "right")
+```
+
+The KDEs show the within-continent distributional shape. Asia's GDP
+distribution is visibly bimodal (Gulf states and East Asian tigers on
+one side, South and Central Asia on the other), with an IQR ratio of
+8.9, the largest of any continent. Africa's life-expectancy
+distribution is wide and left-skewed, with a lower tail formed by
+Swaziland, Zambia, Zimbabwe, and Lesotho, all below 45 years.
+Population densities peak near 10 million in every continent, with
+Asia carrying the long right tail that contains China and India.
+Continents that appeared internally homogeneous on the trajectory
+plot thus conceal real heterogeneity under the mean.
+
+```{r eda-table}
+summary_tbl <- data.frame(
+  N          = as.vector(table(continent)),
+  `GDP 1952` = round(tapply(gdp[,"1952"],     continent, median), 0),
+  `GDP 2007` = round(tapply(gdp[,"2007"],     continent, median), 0),
+  `LE 1952`  = round(tapply(lifeExp[,"1952"], continent, median), 1),
+  `LE 2007`  = round(tapply(lifeExp[,"2007"], continent, median), 1),
+  `Pop 2007 (M)` = round(tapply(popn[,"2007"], continent, sum) / 1e6, 0),
+  check.names = FALSE
+)
+rownames(summary_tbl) <- sort(unique(continent))
+kable(summary_tbl,
+      caption = "Median GDP per capita (USD) and life expectancy (years) by continent; population (millions).",
+      booktabs = TRUE)
+```
+
+A small number of countries deviate strongly from their continent's
+trend and reappear as extreme points in the PCA, CCA, and MDS
+projections below. Equatorial Guinea's GDP per capita rose
+32× on the back of offshore oil discoveries, Zimbabwe's life
+expectancy fell by five years, Singapore, South Korea, and Taiwan
+achieved sustained 20–24× GDP multiples, and the Democratic Republic
+of the Congo and Haiti are the two economies that regressed most
+sharply, ending the period at 36% and 65% of their 1952 GDP per
+capita respectively.
+
+## Principal Component Analysis
+
+We perform PCA independently on the $141 \times 12$ GDP and
+life-expectancy blocks. GDP values span more than two orders of
+magnitude across countries, so we standardise each year column (which
+is equivalent to decomposing the correlation matrix) to prevent
+larger recent-year variances from dominating. Life expectancy is on a
+comparable scale across years, but we also standardise it. The
+covariance and correlation decompositions produce near-identical
+results (PC1 explains 92.0% and 92.3% of the variance respectively),
+and standardising keeps the treatment of the two variable blocks
+consistent.
+
+```{r pca-fit}
+pca_gdp  <- prcomp(gdp,     scale. = TRUE)
+pca_life <- prcomp(lifeExp, scale. = TRUE)
+var_ratio <- function(p) (p$sdev^2) / sum(p$sdev^2)
+```
+
+### Scree analysis and variance explained
+
+```{r pca-scree, fig.cap="Scree plots for the GDP and life-expectancy PCAs.", fig.width=11, fig.height=4}
+scree_df <- function(p, label) data.frame(pc = seq_along(var_ratio(p)),
+  var = var_ratio(p), cum = cumsum(var_ratio(p)), which = label)
+scree <- rbind(scree_df(pca_gdp, "GDP per capita"),
+               scree_df(pca_life, "Life expectancy"))
+ggplot(scree, aes(pc)) +
+  geom_col(aes(y = var), fill = "steelblue", alpha = 0.6) +
+  geom_line(aes(y = cum), colour = "darkred") +
+  geom_point(aes(y = cum), colour = "darkred", size = 1.3) +
+  geom_hline(yintercept = 0.9, linetype = "dashed",
+             colour = "grey40", linewidth = 0.3) +
+  facet_wrap(~which) +
+  scale_x_continuous(breaks = 1:12) +
+  labs(x = "Principal component", y = "Proportion of variance") +
+  theme_paper
+```
+
+Both decompositions concentrate almost all variance in a single
+component. PC1 explains 91.8% of the GDP variance and 92.3% of the
+life-expectancy variance, while PC2 adds a further 5.3% and 5.6%
+respectively. Two components are sufficient, together covering 97.1%
+of the GDP variance and 97.9% of the life-expectancy variance. This
+follows directly from the year-to-year redundancy within each block,
+with adjacent years correlated at approximately 0.99, so 12 columns
+compress cleanly into two.
+
+### Interpretation of PC1 and PC2
+
+The loadings have the same structure on both decompositions. PC1
+assigns nearly uniform positive weights across all 12 years (0.28 to
+0.30 on GDP, 0.27 to 0.30 on life expectancy), so a country's PC1
+score is approximately proportional to its average level over the
+full 55-year period. For PC2, the loadings begin strongly negative in
+1952 ($-0.35$) and rise monotonically to strongly positive in 2007
+($+0.42$). A positive PC2 score therefore indicates a country whose
+values were low early and high late (a catching-up or fast-growth
+trajectory), and a negative PC2 score indicates the opposite
+(stagnation or decline from a relatively high base).
+
+### PC score scatter plots
+
+```{r pca-align, include=FALSE}
+sw <- which(country == "Switzerland")
+if (length(sw) && pca_gdp$x[sw, 1] < 0)  pca_gdp$x[, 1]  <- -pca_gdp$x[, 1]
+if (length(sw) && pca_life$x[sw, 1] < 0) pca_life$x[, 1] <- -pca_life$x[, 1]
+sg <- which(country == "Singapore")
+if (length(sg) && pca_gdp$x[sg, 2] < 0) pca_gdp$x[, 2] <- -pca_gdp$x[, 2]
+om <- which(country == "Oman")
+if (length(om) && pca_life$x[om, 2] < 0) pca_life$x[, 2] <- -pca_life$x[, 2]
+```
+
+```{r pca-scores, fig.cap="PC1 vs PC2 scatter plots for GDP (left) and life expectancy (right), coloured by continent.", fig.width=13, fig.height=5}
+scatter_df <- function(p, label) {
+  d <- data.frame(PC1 = p$x[,1], PC2 = p$x[,2], country = country,
+                  continent = continent, which = label)
+  d$dist <- sqrt(d$PC1^2 + d$PC2^2); d
+}
+make_scatter <- function(d, title) {
+  top <- d[order(-d$dist), ][1:8, ]
+  ggplot(d, aes(PC1, PC2, colour = continent)) +
+    geom_point(size = 1.8, alpha = 0.75) +
+    geom_text_repel(data = top, aes(label = country),
+                    size = 2.3, show.legend = FALSE, max.overlaps = Inf) +
+    scale_colour_manual(values = palette_continents) +
+    labs(title = title, colour = "Continent") + theme_paper
+}
+(make_scatter(scatter_df(pca_gdp,  "GDP"), "GDP — PC1 vs PC2") |
+ make_scatter(scatter_df(pca_life, "Life Expectancy"), "Life Expectancy — PC1 vs PC2")) +
+  plot_layout(guides = "collect") & theme(legend.position = "right")
+```
+
+The GDP scatter is structured by level on PC1. Switzerland, the US,
+Norway, Canada, and Denmark sit at the top end, while Myanmar,
+Burundi, Ethiopia, Eritrea, and Malawi sit at the bottom. PC2 then
+separates countries by growth trajectory. The top Asian countries
+form the obvious cluster at the top of PC2 (Singapore, Hong Kong,
+Taiwan, South Korea, Japan), identifying the countries whose relative
+position improved most over the period. Strongly negative PC2 scores
+belong to Venezuela, Iraq, and Libya, relatively high-income
+economies in 1952 that did not sustain their early position
+advantage.
+
+The life-expectancy scatter has the same geometry. PC1 separates
+Iceland, Sweden, Norway, the Netherlands, and Switzerland at the top
+and Sierra Leone, Afghanistan, Angola, Guinea-Bissau, and Mozambique
+at the bottom. PC2 captures the rate of improvement, with Oman,
+Vietnam, Saudi Arabia, Indonesia, and Libya gaining life expectancy
+fastest, while Zimbabwe, Zambia, Rwanda, Botswana, and the Democratic
+Republic of the Congo have the strongly negative PC2 scores
+consistent with the health and conflict downturn identified in the
+EDA. Continent clusters are distinct, with Europe and Oceania
+at the top of PC1, Africa at the bottom, the Americas in the middle,
+and Asia stretched along PC2 consistent with its bimodal GDP
+distribution.
+
+### GDP PC1 versus life-expectancy PC1
+
+```{r pca-cross, fig.cap="First PC scores, GDP against life expectancy.", fig.width=7, fig.height=5.5}
+cross <- data.frame(gdp_pc1 = pca_gdp$x[,1], life_pc1 = pca_life$x[,1],
+                    country = country, continent = continent)
+cross$dist <- sqrt(cross$gdp_pc1^2 + cross$life_pc1^2)
+ggplot(cross, aes(gdp_pc1, life_pc1, colour = continent)) +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_text_repel(data = cross[order(-cross$dist), ][1:10, ],
+                  aes(label = country), size = 2.4, show.legend = FALSE) +
+  scale_colour_manual(values = palette_continents) +
+  labs(x = "GDP PC1 score", y = "Life Expectancy PC1 score", colour = "Continent") +
+  theme_paper
+```
+
+The two PC1 scores plotted against each other show how economic
+level and health level covary over the full period. The Pearson
+correlation is `r round(cor(pca_gdp$x[,1], pca_life$x[,1]), 2)`,
+consistent with the 0.81 log(GDP)–life expectancy correlation seen
+in the 2007 snapshot and confirming the long-run coupling between
+wealth and health. Most countries lie close to the diagonal. The systematic
+deviations are countries whose health outcomes are either stronger or
+weaker than their income level would predict, reflecting external
+factors such as public health investment, diet, and health system
+access that the economic dimension alone does not capture.
+
+### Limitations of linear PCA
+
+The decomposition is restricted to linear combinations of the year
+columns and the GDP–life expectancy relationship is non-linear
+(Pearson correlation 0.68 on raw GDP against 0.81 on log(GDP)).
+Kernel PCA, which applies the standard decomposition in a feature
+space induced by a kernel, would capture this curvature directly and
+would be expected to produce tighter continent separation than the
+linear projection used here.^[Hastie, Tibshirani, and Friedman,
+*The Elements of Statistical Learning* (2nd ed., 2009), Chapter 14.]
+
+## Canonical Correlation Analysis
+
+We apply CCA with $\log(\text{GDP})$ as the first variable set and
+life expectancy as the second, giving $p = q = 12$. The log transform
+is motivated by the same skewness and non-linearity noted in the EDA
+and the PCA limitations subsection. Raw GDP is strongly right-skewed
+(skewness 1.88) and the 2007 GDP–life expectancy relationship curves
+noticeably on the raw scale but is close to linear on the log scale.
+
+```{r cca-fit}
+log_gdp  <- log(as.matrix(gdp))
+life_mat <- as.matrix(lifeExp)
+cc  <- cancor(log_gdp, life_mat)
+cc_raw <- cancor(as.matrix(gdp), life_mat)
+U <- scale(log_gdp,  scale = FALSE) %*% cc$xcoef
+V <- scale(life_mat, scale = FALSE) %*% cc$ycoef
+```
+
+```{r cca-scatter, fig.cap="First pair of canonical variables, coloured by continent.", fig.width=7, fig.height=5.5}
+cca_df <- data.frame(U1 = U[,1], V1 = V[,1],
+                     country = country, continent = continent)
+cca_df$dist <- sqrt(cca_df$U1^2 + cca_df$V1^2)
+ggplot(cca_df, aes(U1, V1, colour = continent)) +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_text_repel(data = cca_df[order(-cca_df$dist), ][1:8, ],
+                  aes(label = country), size = 2.4, show.legend = FALSE) +
+  scale_colour_manual(values = palette_continents) +
+  labs(x = "First CC variable (log GDP side)",
+       y = "First CC variable (life expectancy side)",
+       title = sprintf("CCA: First canonical pair  (r = %.3f)", cc$cor[1]),
+       colour = "Continent") +
+  theme_paper
+```
+
+### Canonical correlations
+
+The first canonical correlation is `r round(cc$cor[1], 2)`, and
+subsequent correlations decay to `r round(cc$cor[2], 2)`,
+`r round(cc$cor[3], 2)`, and `r round(cc$cor[4], 2)`, with the
+remainder below 0.40. The first pair therefore carries most of the
+shared linear structure between the two blocks. Looking at CC2
+directly, the GDP-side loadings start near zero in 1952 (0.003), rise
+to 0.11 around 1977, and fall back to $-0.11$ by 2007, while the
+life-expectancy loadings are uniformly small and negative across all
+12 years ($-0.05$ to $-0.19$). The GDP pattern alone describes a
+faint mid-period growth contrast, but it is not matched by any
+equivalent temporal structure on the life-expectancy side, so the two
+variates of CC2 are not aligned on the same temporal feature and the
+pair has no joint interpretation. Higher-order pairs decay further
+and are similarly uninterpretable.
+
+### Interpretation of the first canonical pair
+
+The first canonical axis ranks countries by a joint development level
+that log(GDP) and life expectancy identify together. The lower
+extreme is dominated by sub-Saharan African and conflict-affected
+Asian states, with Mozambique, Myanmar, and Sierra Leone at the
+bottom, and the upper extreme by Western European countries and the
+United States, with Norway and Switzerland at the top. This ordering
+is near-identical to the one PCA produced on either variable
+separately, because the 12 year columns within each block are
+correlated at approximately 0.99 and there is little room for CCA's
+maximum-correlation objective to choose a direction meaningfully
+different from PCA's maximum-variance one. The continent structure on
+the canonical scatter reproduces the PCA pattern, with Africa in the
+lower-left and Europe and Oceania in the upper-right.
+
+### Effect of the log transform
+
+Repeating the analysis on raw GDP gives a first canonical correlation
+of `r round(cc_raw$cor[1], 2)`, materially lower than the
+`r round(cc$cor[1], 2)` achieved with log(GDP). CCA only finds linear
+combinations of the variables it is given, so any curvature in the
+raw GDP–life expectancy relationship is left unaccounted for. The
+log transform straightens the relationship and raises the canonical
+correlation. The gain is the PCA-section's linearity limitation
+measured on a different axis.
+
+## Multidimensional Scaling
+
+Classical (metric) MDS is applied to the combined 36-dimensional
+dataset formed by concatenating log(GDP), life expectancy, and
+log(population), using Euclidean distance as specified in the
+coursework. The log transforms on GDP and population bring them onto
+a roughly comparable scale with life expectancy.
+
+```{r mds-fit}
+UN_transformed <- cbind(log(as.matrix(gdp)), as.matrix(lifeExp), log(as.matrix(popn)))
+d_full    <- dist(UN_transformed)
+mds       <- cmdscale(d_full, k = 2, eig = TRUE)
+d_reduced <- dist(mds$points)
+dist_cor  <- cor(as.vector(d_full), as.vector(d_reduced))
+```
+
+The Pearson correlation between pairwise distances in the original
+36-D space and the 2D MDS projection is
+`r round(dist_cor, 3)`, so the two retained dimensions preserve the
+distance geometry of the full data almost exactly.
+
+```{r mds-plot, fig.cap="Two-dimensional MDS representation, coloured by continent.", fig.width=8, fig.height=6}
+mds_df <- data.frame(D1 = mds$points[,1], D2 = mds$points[,2],
+                     country = country, continent = continent)
+mds_df$dist <- sqrt(mds_df$D1^2 + mds_df$D2^2)
+ggplot(mds_df, aes(D1, D2, colour = continent)) +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_text_repel(data = mds_df[order(-mds_df$dist), ][1:10, ],
+                  aes(label = country), size = 2.4, show.legend = FALSE) +
+  scale_colour_manual(values = palette_continents) +
+  labs(x = "MDS dimension 1", y = "MDS dimension 2", colour = "Continent") +
+  theme_paper
+```
+
+### Development axis
+
+Dimension 1 is a clear development axis. The continent centroids line
+up from Africa at $-37$ through the Americas at $+18$ and Europe at
+$+44$ to Oceania at $+52$, in the same order they occupy on every
+previous projection. The lower extreme is dominated by sub-Saharan
+African and conflict-affected Asian states such as Sierra Leone,
+Afghanistan, Angola, Guinea-Bissau, and Rwanda, while the upper
+extreme is occupied by Scandinavian and Alpine European countries
+including Sweden, Iceland, Norway, the Netherlands, and Switzerland.
+This country ordering matches the one produced by PCA and CCA, since
+all three methods are projecting the same dominant development signal
+that accounts for the bulk of the variation in the data.
+
+### Growth direction
+
+Dimension 2 separates countries by the direction of change in life
+expectancy over the period rather than by level. The most negative
+scores belong to countries with the largest life-expectancy gains
+over the 55 years, a cluster containing Oman, Vietnam, Indonesia, and
+Yemen, while the most positive scores belong to countries whose life
+expectancy fell or stagnated over this period, including Zimbabwe,
+Botswana, Zambia, and Swaziland. Asia's centroid is pulled
+below the horizontal axis by its concentration of fast-gaining
+countries, while Africa's centroid sits near the horizontal because
+the continent contains both rapidly improving and declining cases.
+The contrast is the same one that appeared as PC2 in the
+life-expectancy PCA, now reproduced with all three variables analysed
+simultaneously.
+
+### Relationship to PCA
+
+The agreement between the MDS and PCA axes is not a coincidence.
+Classical MDS with Euclidean distance is, up to sign, the same
+decomposition as PCA on the same centered data. Writing the SVD of
+the centered data matrix as
+$$X = U D V^T,$$
+PCA returns the scores
+$$T_{\text{PCA}} = X V = U D.$$
+Classical MDS forms the Gram matrix $B = X X^T$ and takes the
+eigendecomposition
+$$B = U D^2 U^T,$$
+from which the MDS coordinates are the leading columns of $U D$, the
+same matrix as $T_{\text{PCA}}$. The MDS scatter does not literally
+reproduce either PCA scatter because the input differs. Here MDS is
+applied to the 36-column concatenation of $\log(\text{GDP})$, life
+expectancy, and $\log(\text{popn})$, whereas the PCA sections ran the
+decomposition on the GDP and life-expectancy blocks separately.
+
+### Comparison with the earlier analyses
+
+The MDS projection recovers the same two axes as the individual PCAs,
+with dimension 1 tracking development level and dimension 2 tracking
+growth direction. The MDS version adds a third variable by operating
+on all three simultaneously, so a single 2D summary captures joint
+structure that required two separate PCAs above. The 0.997
+correlation between pairwise distances in the original 36-D space and
+the 2D MDS projection makes the reduced representation a near-lossless
+summary, so the development and growth-direction axes are the two
+dominant sources of variation in the full UN data.
+
+\newpage
+
+# Question 2
+
+## Linear Discriminant Analysis
+
+We use LDA to predict continent from all 36 features (GDP, life
+expectancy, and population across 12 years). The data are split 70/30
+into training and test sets.
+
+```{r lda-fit}
+X_all <- as.matrix(cbind(gdp, lifeExp, popn))
+y_all <- factor(continent)
+set.seed(42)
+n <- nrow(X_all)
+idx <- sample(n, round(0.7 * n))
+fit_lda <- MASS::lda(X_all[idx, ], grouping = y_all[idx])
+pred    <- predict(fit_lda, X_all[-idx, ])$class
+acc_single <- mean(pred == y_all[-idx])
+cm <- table(True = y_all[-idx], Pred = pred)
+
+accs <- numeric(50)
+for (s in 1:50) {
+  set.seed(s)
+  i_tr <- sample(n, round(0.7 * n))
+  m    <- MASS::lda(X_all[i_tr, ], grouping = y_all[i_tr])
+  p    <- predict(m, X_all[-i_tr, ])$class
+  accs[s] <- mean(p == y_all[-i_tr])
+}
+```
+
+A single fixed split with seed 42 gives a test accuracy of
+`r sprintf("%.3f", acc_single)` on `r nrow(X_all) - length(idx)`
+held-out countries, and averaging over 50 random splits gives a more
+stable estimate of `r sprintf("%.3f ± %.3f", mean(accs), sd(accs))`.
+Both figures sit comfortably above the 0.20 five-class chance rate
+and above the 0.37 majority-class baseline set by Africa's sample
+proportion, so the classifier is extracting genuine structure from
+the features.
+
+```{r lda-confusion}
+kable(as.matrix(cm),
+      caption = "Rows are true continents, columns are predicted.",
+      booktabs = TRUE)
+```
+
+Per-class accuracy varies substantially. Africa is the best-classified
+continent, followed by Europe, Asia, and the Americas. The Oceanian
+country in the test set is misclassified as European. Asia's errors
+are spread across Africa, the Americas, and Europe in roughly equal
+proportions.
+
+The per-class pattern is consistent with LDA's modelling assumptions.
+The classifier assigns country $i$ to the class $c$ that maximises
+$$\delta_c(x) = x^\top \Sigma^{-1} \mu_c - \tfrac{1}{2} \mu_c^\top \Sigma^{-1} \mu_c + \log \pi_c,$$
+where $\mu_c$ is the class mean, $\Sigma$ is the pooled within-class
+covariance, and $\pi_c$ is the class prior. The decision rule is
+therefore linear in $x$, and the two modelling assumptions behind it
+are that each class is multivariate normal and that all classes share
+the same covariance $\Sigma$. Both assumptions break on this dataset.
+The EDA showed Asia's GDP distribution is strongly bimodal, so Asia's
+single mean $\mu_{\text{Asia}}$ lands between its two modes and the
+density $N(\mu_{\text{Asia}}, \Sigma)$ concentrates mass in a region
+where almost no Asian country actually sits, while overlapping with
+the Gaussian densities for Africa, the Americas, and Europe. The
+shared covariance is similarly misspecified because Oceania and
+Europe have far tighter within-class spread than Africa or Asia, so
+$\Sigma$ is an average that fits neither. Africa is classified more
+accurately than Asia despite being internally heterogeneous because
+its spread runs along a single unimodal axis, which the Gaussian
+model can represent even if the variance is wrong.
+
+## Clustering
+
+Three methods from the module are applied to the standardised GDP and
+life-expectancy blocks (24 features). k-means and the model-based
+clustering are fitted directly, and hierarchical clustering is
+applied via its linkage-distance dendrogram, using Ward's linkage as
+in the computer lab sessions. Ward merges the pair of clusters
+producing the smallest increase in within-cluster variance at each
+step. $k$ is chosen from the dendrogram and the MVN-mixture BIC
+curve, with the same $k$ then used for k-means so that all three
+methods can be compared on equal footing.
+
+```{r clust-fit}
+X_cluster <- scale(cbind(as.matrix(gdp), as.matrix(lifeExp)))
+h         <- hclust(dist(X_cluster), method = "ward.D2")
+mc_models <- Mclust(X_cluster, G = 1:8, verbose = FALSE)
+bic_per_G <- apply(mc_models$BIC, 1, function(v) max(v, na.rm = TRUE))
+```
+
+```{r clust-selection, fig.cap="Hierarchical clustering dendrogram (left) and model-based BIC as a function of number of components (right).", fig.width=11, fig.height=4}
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(h, labels = FALSE, main = "Hierarchical clustering (Ward)",
+     xlab = "Countries", sub = "", ylab = "Linkage distance")
+plot(as.numeric(names(bic_per_G)), bic_per_G, type = "b",
+     xlab = "Number of components G", ylab = "BIC (best model)",
+     main = "Model-based (mclust) BIC", col = "steelblue", pch = 19)
+```
+
+### Choice of k
+
+The dendrogram's three largest merge distances are
+`r sprintf("%.1f, %.1f, and %.1f", sort(h$height, decreasing=TRUE)[1], sort(h$height, decreasing=TRUE)[2], sort(h$height, decreasing=TRUE)[3])`,
+with every subsequent merge below 16. The substantial gap between
+merges 3 and 4 identifies $k = 3$ as the cleanest cut point from the
+hierarchical perspective. The MVN-mixture BIC curve has a clear
+maximum at $G = 2$ (BIC `r round(bic_per_G[2], 0)`), with $G = 3$
+second-best at BIC `r round(bic_per_G[3], 0)` and $G \geq 4$ falling
+sharply. The two selection criteria therefore disagree, with the
+dendrogram preferring $k = 3$ and the mixture model preferring
+$k = 2$. We proceed with $k = 3$ because the BIC gap between $G = 2$
+and $G = 3$ is moderate relative to the drop-off from $G = 3$ to
+$G = 4$, and the three-cluster partition is the more informative one
+against the development-axis structure recovered by PCA and MDS.
+
+### Agreement between methods
+
+```{r clust-compare}
+best_k <- 3
+km_res   <- kmeans(X_cluster, centers = best_k, nstart = 10)
+hier_res <- cutree(h, k = best_k)
+mc_res   <- Mclust(X_cluster, G = best_k, verbose = FALSE)$classification
+ari_km_h  <- adjustedRandIndex(km_res$cluster, hier_res)
+ari_km_mc <- adjustedRandIndex(km_res$cluster, mc_res)
+ari_h_mc  <- adjustedRandIndex(hier_res,       mc_res)
+```
+
+```{r clust-comparison, fig.cap="Cluster assignments at k = 3 for k-means, hierarchical clustering, and the MVN mixture.", fig.width=13, fig.height=4}
+pca2 <- prcomp(X_cluster)$x[, 1:2]
+cdf <- data.frame(PC1 = pca2[,1], PC2 = pca2[,2],
+                  kmeans = factor(km_res$cluster),
+                  hier   = factor(hier_res),
+                  mvn    = factor(mc_res),
+                  continent = continent)
+pl <- function(lab, ti) ggplot(cdf, aes(PC1, PC2, colour = .data[[lab]])) +
+  geom_point(size = 1.8, alpha = 0.8) + labs(title = ti, colour = lab) +
+  theme_paper
+(pl("kmeans", "k-means (k=3)") | pl("hier", "Hierarchical (k=3)") |
+ pl("mvn", "MVN mixture (G=3)")) &
+  theme(legend.position = "none")
+```
+
+At $k = 3$ the Adjusted Rand Index is `r round(ari_km_h, 2)` between
+k-means and hierarchical clustering, `r round(ari_km_mc, 2)` between
+k-means and the MVN mixture, and `r round(ari_h_mc, 2)` between
+hierarchical and the MVN mixture. The k-means and hierarchical
+results are nearly identical, consistent with both being
+variance-minimising methods on the same standardised features. The
+MVN mixture disagrees more because mclust fits full-rank covariance
+structures (varying shape, equal volume) rather than the spherical
+within-cluster geometry that k-means and Ward's method assume, and
+the covariance flexibility lets it draw cluster boundaries that
+follow the anisotropic spread of the data rather than minimising
+within-cluster variance.
+
+### Cluster interpretation
+
+The three clusters have a natural development interpretation. The
+first cluster contains 18 of the 30 European countries, 6 Asian
+countries, and both Oceanian countries, placing it at the high-GDP
+and high-life-expectancy end of the development axis already seen in
+PCA and MDS. The second cluster contains 42 of the 52 African
+countries together with 10 Asian and 2 American ones, and sits at the
+low-development end. The third is the middle cluster, dominated by
+the Americas (21 of 25) with a substantial Asian contingent (16 of
+32) and the remaining 12 European countries. The ordering reproduces
+the PCA and MDS development axis and shows that continent is a
+reasonable but imperfect proxy for development level. Africa and
+Europe fall almost entirely into the low and high clusters
+respectively, while the Americas and Asia are split across the middle
+and the extremes.
+
+## Linear Regression
+
+We predict 2007 life expectancy from the 11 GDP columns for 1952–2002,
+excluding 2007 GDP to avoid contemporaneous leakage. The 11
+predictors are correlated with one another at approximately 0.99 (the
+year-to-year structure noted in the EDA), which is textbook
+multicollinearity and motivates testing methods that handle it
+directly rather than OLS alone. Six models are compared. Ordinary
+least squares, ridge regression, and principal component regression
+(PCR) are each applied to raw GDP and to $\log(\text{GDP})$.
+
+Performance is measured by leave-one-out cross-validation (LOOCV).
+Each country is held out in turn,
+the model is refit on the remaining 140, and the held-out country is
+predicted from that fit.^[Hastie, Tibshirani, and Friedman, *The
+Elements of Statistical Learning* (2nd ed., 2009), Section 7.10.]
+Writing $\hat y_i$ for the prediction made for country $i$ by the
+model fit without it, the LOOCV score is
+$$\text{RMSE}_{\text{LOOCV}} = \sqrt{\tfrac{1}{141} \sum_{i=1}^{141} (y_i - \hat y_i)^2}.$$
+Each $\hat y_i$ is produced by a fit that never saw country $i$, so
+the 141 residuals are genuine prediction errors rather than in-sample
+fit.
+
+Ridge and PCR have hyperparameters ($\alpha$ and $k$), which we tune
+by nested cross-validation. The LOOCV above is the outer loop. Within
+each outer fold, an inner 10-fold CV on the 140 training rows picks
+$\alpha$ or $k$, and the selected value is used to refit on those 140
+rows and predict the held-out country. The held-out country never
+enters the inner loop, so it cannot influence the hyperparameter used
+to score it. A single flat LOOCV that chose $\alpha$ or $k$ from all
+141 residuals would feed each country's residual back into its own
+hyperparameter selection, pulling the reported RMSE below the true
+out-of-sample value. OLS has no hyperparameter and is unaffected.
+
+### Ridge regression and principal component regression
+
+Ridge regression minimises
+$$\|y - X\beta\|^2 + \alpha \|\beta\|^2,$$
+adding a penalty on the squared length of $\beta$ to the usual
+least-squares loss. When predictors are near-collinear, OLS fits tend
+to pair large positive coefficients with large negative ones that
+mostly cancel on the fitted values. The ridge penalty rules these out
+and returns a smaller, more stable set of coefficients in exchange
+for a small amount of bias. The parameter $\alpha$ sets the trade-off.
+At $\alpha = 0$ Ridge reduces to OLS, and as $\alpha \to \infty$ the
+coefficients are driven to zero. We search $\alpha$ on a 50-point
+log-spaced grid in $[10^{-2}, 10^3]$.
+
+Principal component regression replaces the 11 near-collinear year
+columns with their first $k$ principal components and fits OLS in
+that reduced space. The PC directions beyond the leading few carry
+almost no variance in the GDP block, so including them in OLS would
+inflate the fit's sensitivity to them without supplying any real
+signal. Cutting the number of components at $k$ eliminates those
+directions outright.
+
+### Ridge and PCR as shrinkage on principal directions
+
+Both estimators can be written as filters on the principal directions
+of the predictor matrix. Let the SVD of the centered $X$ be
+$$X = U D V^T,$$
+where $D$ holds the singular values in decreasing order. The OLS fit
+projects $y$ onto the column space of $X$, weighting every PC
+direction equally, while Ridge and PCR replace those unit weights
+with component-wise filters,
+$$\hat y_{\text{OLS}} = \sum_i u_i u_i^T y, \qquad
+  \hat y_{\text{Ridge}} = \sum_i \frac{d_i^2}{d_i^2 + \alpha} u_i u_i^T y, \qquad
+  \hat y_{\text{PCR}} = \sum_{i=1}^{k} u_i u_i^T y.$$
+Ridge's factor is nearly one on high-variance directions and near
+zero on low-variance ones, giving a smooth shrinkage. PCR is the hard
+version, keeping the first $k$ directions untouched and dropping the
+rest. In the GDP block the first three singular values dominate the
+remaining eight by orders of magnitude, so both filters produce fits
+built almost entirely from the first three PC directions. Ridge's
+nested-CV RMSE and PCR's are two smoothings of the same low-rank
+structure, explaining why they land so close.
+
+```{r reg-setup}
+y_reg <- lifeExp[, "2007"]
+X_raw <- as.matrix(gdp[, 1:11]); colnames(X_raw) <- paste0("y", colnames(X_raw))
+X_log <- log(X_raw)
+alpha_grid <- 10^seq(-2, 3, length.out = 50)
+k_grid     <- 1:11
+
+ridge_fit <- function(X, y, alpha) {
+  mx <- colMeans(X); sx <- apply(X, 2, sd); my <- mean(y)
+  Xs <- sweep(sweep(X, 2, mx, "-"), 2, sx, "/"); ys <- y - my
+  list(mx=mx, sx=sx, my=my,
+       beta_s = solve(crossprod(Xs) + alpha * diag(ncol(Xs)), crossprod(Xs, ys)))
+}
+ridge_predict <- function(fit, Xnew) {
+  Xs <- sweep(sweep(Xnew, 2, fit$mx, "-"), 2, fit$sx, "/")
+  as.numeric(Xs %*% fit$beta_s) + fit$my
+}
+pcr_fit <- function(X, y, k) {
+  mx <- colMeans(X); sx <- apply(X, 2, sd)
+  Xs <- sweep(sweep(X, 2, mx, "-"), 2, sx, "/")
+  p <- prcomp(Xs, scale. = FALSE); S <- p$x[, 1:k, drop = FALSE]
+  list(mx=mx, sx=sx, rot=p$rotation[, 1:k, drop = FALSE],
+       lm_fit=lm(y ~ ., data = data.frame(y=y, S)))
+}
+pcr_predict <- function(fit, Xnew) {
+  Xs <- sweep(sweep(Xnew, 2, fit$mx, "-"), 2, fit$sx, "/")
+  as.numeric(predict(fit$lm_fit, newdata = data.frame(Xs %*% fit$rot)))
+}
+loocv_ols <- function(X, y) {
+  sapply(seq_along(y), function(i) {
+    m <- lm(y ~ ., data = data.frame(y=y[-i], X[-i, ]))
+    predict(m, newdata = data.frame(t(X[i, ])))
+  })
+}
+rmse <- function(a, b) sqrt(mean((a - b)^2))
+r2   <- function(a, b) 1 - sum((a - b)^2) / sum((a - mean(a))^2)
+```
+
+```{r reg-nested, cache=TRUE}
+nested_ridge <- function(X, y, grid, n_inner = 10) {
+  n <- length(y); preds <- numeric(n); alphas <- numeric(n)
+  for (i in 1:n) {
+    Xtr <- X[-i, ]; ytr <- y[-i]; set.seed(i)
+    fold <- sample(rep(1:n_inner, length.out = nrow(Xtr)))
+    cv <- sapply(grid, function(a) mean(sapply(1:n_inner, function(k) {
+      fit <- ridge_fit(Xtr[fold != k, ], ytr[fold != k], a)
+      rmse(ytr[fold == k], ridge_predict(fit, Xtr[fold == k, , drop = FALSE]))
+    })))
+    a_best <- grid[which.min(cv)]; alphas[i] <- a_best
+    preds[i] <- ridge_predict(ridge_fit(Xtr, ytr, a_best), X[i, , drop = FALSE])
+  }
+  list(preds = preds, alphas = alphas)
+}
+nested_pcr <- function(X, y, grid, n_inner = 10) {
+  n <- length(y); preds <- numeric(n); ks <- integer(n)
+  for (i in 1:n) {
+    Xtr <- X[-i, ]; ytr <- y[-i]; set.seed(i)
+    fold <- sample(rep(1:n_inner, length.out = nrow(Xtr)))
+    cv <- sapply(grid, function(k) mean(sapply(1:n_inner, function(f) {
+      fit <- pcr_fit(Xtr[fold != f, ], ytr[fold != f], k)
+      rmse(ytr[fold == f], pcr_predict(fit, Xtr[fold == f, , drop = FALSE]))
+    })))
+    k_best <- grid[which.min(cv)]; ks[i] <- k_best
+    preds[i] <- pcr_predict(pcr_fit(Xtr, ytr, k_best), X[i, , drop = FALSE])
+  }
+  list(preds = preds, ks = ks)
+}
+p_ols_raw <- loocv_ols(X_raw, y_reg)
+p_ols_log <- loocv_ols(X_log, y_reg)
+nr_raw <- nested_ridge(X_raw, y_reg, alpha_grid)
+nr_log <- nested_ridge(X_log, y_reg, alpha_grid)
+np_raw <- nested_pcr(X_raw,  y_reg, k_grid)
+np_log <- nested_pcr(X_log,  y_reg, k_grid)
+```
+
+On log(GDP) the selected $\alpha$ is stable across the 141 outer
+folds (range `r sprintf("%.1f–%.1f", min(nr_log$alphas), max(nr_log$alphas))`,
+median `r sprintf("%.1f", median(nr_log$alphas))`). On raw GDP it is
+less stable (range
+`r sprintf("%.2f–%.1f", min(nr_raw$alphas), max(nr_raw$alphas))`,
+median `r sprintf("%.1f", median(nr_raw$alphas))`), reflecting a flat
+cross-validation surface on the raw scale where different subsets of
+140 countries favour very different penalties.
+
+```{r reg-path, fig.cap="Standardised Ridge coefficients as a function of the penalty $\\alpha$, on raw GDP (left) and log GDP (right). The vertical dashed line marks the median $\\alpha$ selected across the 141 nested-LOOCV outer folds.", fig.width=11, fig.height=4}
+alphas_path <- 10^seq(-2, 3, length.out = 100)
+coef_path <- function(X, y) {
+  mx <- colMeans(X); sx <- apply(X, 2, sd)
+  Xs <- sweep(sweep(X, 2, mx, "-"), 2, sx, "/"); ys <- y - mean(y)
+  XtX <- crossprod(Xs)
+  t(sapply(alphas_path, function(a)
+    solve(XtX + a * diag(ncol(Xs)), crossprod(Xs, ys))))
+}
+cp_raw <- coef_path(X_raw, y_reg); cp_log <- coef_path(X_log, y_reg)
+years_pred <- seq(1952, 2002, 5)
+path_df <- rbind(
+  data.frame(alpha = rep(alphas_path, 11),
+             coef  = as.vector(cp_raw),
+             year  = factor(rep(years_pred, each = length(alphas_path))),
+             which = "raw GDP"),
+  data.frame(alpha = rep(alphas_path, 11),
+             coef  = as.vector(cp_log),
+             year  = factor(rep(years_pred, each = length(alphas_path))),
+             which = "log GDP"))
+marks <- data.frame(which = c("raw GDP","log GDP"),
+                    chosen = c(median(nr_raw$alphas), median(nr_log$alphas)))
+ggplot(path_df, aes(alpha, coef, colour = year)) +
+  geom_line(linewidth = 0.5) +
+  geom_vline(data = marks, aes(xintercept = chosen),
+             linetype = "dashed", colour = "red", linewidth = 0.5) +
+  geom_hline(yintercept = 0, colour = "grey50", linewidth = 0.3) +
+  scale_x_log10() + scale_colour_viridis_d(name = "Year") +
+  facet_wrap(~which) +
+  labs(x = expression(alpha), y = "Standardised coefficient") +
+  theme_paper
+```
+
+At low $\alpha$ the eleven year coefficients are large and opposing
+in sign. This is expected when predictors are near-collinear, since
+OLS can produce many combinations of large coefficients that mostly
+cancel when predicting the response. Increasing $\alpha$ shrinks the
+coefficients toward zero and flattens the year-to-year differences
+between them. On log(GDP) the nested-CV median sits in the
+intermediate region, where shrinkage has stabilised the coefficients
+without yet removing their signal.
+
+```{r reg-table}
+k_log <- as.integer(names(sort(table(np_log$ks), decreasing = TRUE))[1])
+k_raw <- as.integer(names(sort(table(np_raw$ks), decreasing = TRUE))[1])
+results <- data.frame(
+  Model = c("OLS (raw GDP)", "OLS (log GDP)",
+            "Ridge (raw GDP)", "Ridge (log GDP)",
+            sprintf("PCR (raw GDP, k=%d)", k_raw),
+            sprintf("PCR (log GDP, k=%d)", k_log)),
+  `LOOCV RMSE` = sprintf("%.2f",
+    c(rmse(y_reg, p_ols_raw), rmse(y_reg, p_ols_log),
+      rmse(y_reg, nr_raw$preds), rmse(y_reg, nr_log$preds),
+      rmse(y_reg, np_raw$preds), rmse(y_reg, np_log$preds))),
+  `LOOCV R2` = sprintf("%.2f",
+    c(r2(y_reg, p_ols_raw), r2(y_reg, p_ols_log),
+      r2(y_reg, nr_raw$preds), r2(y_reg, nr_log$preds),
+      r2(y_reg, np_raw$preds), r2(y_reg, np_log$preds))),
+  check.names = FALSE)
+kable(results,
+      caption = "Nested leave-one-out cross-validated performance.",
+      booktabs = TRUE)
+```
+
+OLS on raw GDP gives a LOOCV RMSE of
+`r sprintf("%.2f", rmse(y_reg, p_ols_raw))` years and $R^2 =$
+`r sprintf("%.2f", r2(y_reg, p_ols_raw))`, while OLS on log(GDP)
+gives RMSE `r sprintf("%.2f", rmse(y_reg, p_ols_log))` and
+$R^2 =$ `r sprintf("%.2f", r2(y_reg, p_ols_log))`, a
+one-and-a-half-year reduction in prediction error from the transform.
+Ridge on log(GDP) improves this further to RMSE
+`r sprintf("%.2f", rmse(y_reg, nr_log$preds))` and $R^2 =$
+`r sprintf("%.2f", r2(y_reg, nr_log$preds))`, while Ridge on raw GDP
+reaches RMSE `r sprintf("%.2f", rmse(y_reg, nr_raw$preds))` and
+$R^2 =$ `r sprintf("%.2f", r2(y_reg, nr_raw$preds))`, a modest gain
+over the raw-scale OLS. GDP's skewness makes the linear relationship
+with life expectancy non-linear on the raw scale but close to linear
+on the log scale, and the regression results express the cost of
+ignoring this as 0.19 units of $R^2$.
+
+PCR has the lowest RMSE of the six models. On log(GDP) the
+inner CV selected $k = 3$ components in every one of the 141 outer
+folds, and the resulting nested LOOCV RMSE is
+`r sprintf("%.2f", rmse(y_reg, np_log$preds))` with $R^2 =$
+`r sprintf("%.2f", r2(y_reg, np_log$preds))`. This stability is
+diagnostic of the underlying structure. The PCA of the GDP block
+showed that the first three components already explain 99% of the
+variance, so removing any single country never changes which
+directions dominate the design matrix and the inner CV reaches the
+same conclusion every time. PCR on raw GDP peaks at $k = 2$ (modal
+selection) with RMSE `r sprintf("%.2f", rmse(y_reg, np_raw$preds))`,
+but still does not reach the log-based models, confirming that the
+transform is more important than the multicollinearity fix.
+
+The nested design lets us separate two effects. For PCR the held-out
+country never influences the $k$ used to score it (because $k$ is
+constant across folds), so the nested RMSE is an unbiased estimate of
+out-of-sample RMSE. For Ridge the inner-selected $\alpha$ does vary
+across outer folds, so the nested score exceeds what a single flat
+LOOCV score would suggest. PCR's zero tuning variance makes it the
+preferred model of the two. Both outperform OLS on log(GDP) because
+they address the near-collinearity of the year columns, with PCR
+doing so more cleanly.
+
+```{r reg-best, fig.cap="Leave-one-out predictions against actual 2007 life expectancy for the best model.", fig.width=7, fig.height=6}
+best_idx <- which.min(c(rmse(y_reg, p_ols_raw), rmse(y_reg, p_ols_log),
+                        rmse(y_reg, nr_raw$preds), rmse(y_reg, nr_log$preds),
+                        rmse(y_reg, np_raw$preds), rmse(y_reg, np_log$preds)))
+best_preds <- list(p_ols_raw, p_ols_log, nr_raw$preds, nr_log$preds,
+                   np_raw$preds, np_log$preds)[[best_idx]]
+pd <- data.frame(actual = y_reg, predicted = best_preds,
+                 country = country, continent = continent)
+pd$ra <- abs(pd$predicted - pd$actual)
+worst3 <- pd[order(-pd$ra), ][1:3, ]
+ggplot(pd, aes(actual, predicted, colour = continent)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_text_repel(data = worst3, aes(label = country),
+                  size = 3, fontface = "bold", show.legend = FALSE) +
+  scale_colour_manual(values = palette_continents) +
+  labs(x = "Actual 2007 life expectancy (years)",
+       y = "LOOCV predicted life expectancy (years)",
+       title = results$Model[best_idx], colour = "Continent") +
+  theme_paper
+```
+
+```{r reg-residuals, include=FALSE}
+resid_all <- best_preds - y_reg
+sd_r <- sd(resid_all); thr <- 2 * sd_r
+outliers <- which(abs(resid_all) > thr)
+```
+
+The residuals have a clear structure. The standard deviation of the
+141 leave-one-out residuals is `r sprintf("%.2f", sd_r)`, and
+`r length(outliers)` countries sit beyond two standard deviations of
+the fit. All seven are African and all are over-predicted. Swaziland,
+Botswana, and South Africa lie above the diagonal by more than 20
+years, with Angola, Lesotho, Equatorial Guinea, and Gabon between 15
+and 17 years. Zambia, Namibia, and Nigeria sit just inside the two-SD
+threshold, extending the same pattern. The direction is systematic
+rather than random. Countries with pre-1990 GDP histories comparable
+to other middle-income nations experienced two shocks the model
+cannot see from GDP alone. The first is a health cluster in
+southern Africa (Swaziland, Botswana, Lesotho, South Africa, Zambia,
+Namibia), where life expectancy fell between 1990 and 2007 without a
+proportional fall in income. The second is an
+oil-rent pattern (Equatorial Guinea, Gabon, Angola), where per-capita
+GDP was pushed up by resource extraction concentrated in a narrow
+elite without matching gains in public health. The two
+negative-residual outliers are Vietnam ($-14.2$ years, life expectancy
+outpaces GDP) and Nicaragua ($-13.0$), which show the opposite gap. A
+health shock that leaves GDP largely unaffected, or a health gain
+decoupled from GDP, is invisible to the model, and these countries
+sit furthest from the diagonal under every combination of transform,
+regularisation, and component count we tried.
