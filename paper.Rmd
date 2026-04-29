@@ -1,6 +1,6 @@
 ---
 title: "MATH3030 Coursework"
-subtitle: "Multivariate Statistics --- Spring 2026"
+subtitle: "Multivariate Analysis --- Spring 2026"
 author: "Aayush Parekh (20527121)"
 date: ""
 output:
@@ -169,8 +169,8 @@ wrap_plots(kde_panels, ncol = 3, guides = "collect") &
   theme(legend.position = "right")
 ```
 
-Asia's GDP distribution is bimodal, splitting Gulf states and East
-Asian tigers from South and Central Asia, with an IQR ratio of 8.9,
+Asia's GDP distribution is bimodal, splitting the Gulf states and the
+high-income East Asian economies from South and Central Asia, with an IQR ratio of 8.9,
 the largest of any continent. Africa's life-expectancy distribution
 is wide and left-skewed, with a sub-45-year tail in southern African
 countries. Asia carries the long population right tail (China, India).
@@ -322,9 +322,9 @@ make_scatter <- function(d, title) {
 
 On the GDP scatter PC1 ranks countries by income level (Switzerland
 and the US at the top, the poorest African economies at the bottom).
-PC2 then picks out growth trajectory, with the East Asian tigers
-clustering at the top, while Venezuela, Iraq, and Libya sit at the
-negative end as 1952 high-income economies that lost ground.
+PC2 then picks out growth trajectory, with Singapore, South Korea, and
+Taiwan clustering at the top, while Venezuela, Iraq, and Libya sit at
+the negative end as 1952 high-income economies that lost ground.
 
 The life-expectancy scatter has the same shape. PC1 again ranks by
 level (Scandinavian and Alpine Europe at the top, sub-Saharan Africa
@@ -490,9 +490,11 @@ life-expectancy PCA, now found jointly with all three variables.
 
 ### Relationship to PCA
 
-The agreement between the MDS and PCA axes is not a coincidence.
-Classical MDS with Euclidean distance is, up to sign, the same
-decomposition as PCA on the same centered data. Writing the SVD of
+The agreement between the MDS and PCA axes follows from the SVD
+duality between the Gram matrix $X X^T$ and the covariance matrix
+$X^T X$, which share the same non-zero eigenvalues. Classical MDS
+with Euclidean distance is, up to sign, the same decomposition as
+PCA on the same centered data. Writing the SVD of
 the centered data matrix as
 $$X = U D V^T,$$
 PCA returns the scores
@@ -545,7 +547,7 @@ for (s in 1:50) {
 }
 ```
 
-A single fixed split with seed 42 gives a test accuracy of
+A single fixed 70/30 split gives a test accuracy of
 `r sprintf("%.3f", acc_single)` on `r nrow(X_all) - length(idx)`
 held-out countries, and averaging over 50 random splits gives a more
 stable estimate of `r sprintf("%.3f ± %.3f", mean(accs), sd(accs))`.
@@ -981,6 +983,4 @@ while the oil-rent economies (Equatorial Guinea, Gabon, Angola)
 earned resource income concentrated in a narrow elite without
 matching public-health gains. The two negative-residual outliers run
 the opposite way, with Vietnam ($-14.2$) and Nicaragua ($-13.0$)
-gaining life expectancy faster than GDP. Every combination of transform,
-regularisation, and component count we tried left the same countries
-furthest from the diagonal.
+gaining life expectancy faster than GDP.
